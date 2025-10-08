@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>完全に隠すゲーム（5ラウンド・中央値スコア）</title>
+<style>
+  :root {
+    --board-w: 780px; /* 16:9 の横長デフォ */
+    --board-h: 438px;
+    --cover-radius: 60; /* px（クリックで出る円の半径）*/
+    --emoji-size: 28px; /* 絵文字のフォントサイズ */
+    --bg: #f7f7fb;
+    --ink: #111;
+    --muted: #6b7280;
+    --accent: #2563eb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+    margin: 0; padding: 24px; color: var(--ink); background: linear-gradient(180deg, #ffffff, #f5f7ff);
+  }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  .app {
+    max-width: 980px; margin: 0 auto; display: grid; gap: 16px;
+    grid-template-columns: 1fr;
+  }
+  .panel {
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 16px; padding: 14px 16px; box-shadow: 0 6px 20px rgba(0,0,0,0.06);
+  }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .spacer { flex: 1; }
+  .stat { color: var(--muted); font-size: 14px; }
+  .stat strong { color: var(--ink); font-weight: 600; }
+  button {
+    appearance: none; border: 1px solid #d1d5db; background: #fff; color: var(--ink);
+    border-radius: 999px; padding: 10px 16px; cursor: pointer; font-weight: 600; transition: 0.15s ease;
+  }
+  button:hover { border-color: var(--accent); box-shadow: 0 4px 14px rgba(37,99,235,0.15); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .board-wrap { display: grid; gap: 10px; }
+  .board {
+    position: relative; width: 100%; max-width: var(--board-w); aspect-ratio: 16/9;
+    background: var(--bg); border: 2px dashed #cbd5e1; border-radius: 18px; overflow: hidden; margin: 0 auto;
+    user-select: none; touch-action: manipulation;
+  }
+  .emoji {
+    position: absolute; font-size: var(--emoji-size); line-height: 1; transform: translate(-50%, -50%);
+    filter: drop-shadow(0 1px 0 #fff);
+  }
+  /* カバー済みの強調表示 */
+  .emoji.covered {
+    background: rgba(34,197,94,0.12); /* green-500 の薄い背景 */
+    outline: 2px solid #22c55e; /* green-500 */
+    border-radius: 999px;
+    padding: 2px 4px;
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+  .emoji.just {
+    animation: pop 0.35s ease;
+  }
+   .emoji.uncovered {
+     background: rgba(250,204,21,0.18); /* amber-400 薄め */
+     outline: 2px dashed #f59e0b;       /* amber-500 */
+     border-radius: 8px;
+     padding: 1px 3px;
+     animation: blink 0.9s ease-in-out infinite alternate;
+   }
+  @keyframes pop {
+    0% { transform: translate(-50%, -50%) scale(0.85); }
+    60% { transform: translate(-50%, -50%) scale(1.20); }
+    100% { transform: translate(-50%, -50%) scale(1.08); }
+  }
+   @keyframes blink {
+     from { filter: brightness(1); }
+     to   { filter: brightness(1.25); }
+   }
+  .legend { font-size: 13px; color: var(--muted); }
+  .rounds { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    border: 1px solid #e5e7eb; padding: 6px 10px; border-radius: 12px; background: #fff; font-size: 13px; color: #111;
+  }
+  .chip.done { background: #eef2ff; border-color: #c7d2fe; }
+  .chip.now { background: #dcfce7; border-color: #86efac; }
+  .chip .small { color: var(--muted); font-size: 12px; }
+  canvas { position: absolute; inset: 0; display: block; }
+</style>
+</head>
+<body>
+  <div class="app">
+    <div class="panel">
+      <div class="row">
+        <h1>完全に隠すゲーム</h1>
+        <div class="spacer"></div>
+        <button id="startBtn" class="primary">ゲーム開始 / リセット</button>
+        <button id="nextBtn" disabled>次のラウンド</button>
+         <button id="highlightBtn">未カバー強調</button>
+      </div>
+      <div class="row" style="margin-top:8px; gap:20px;">
+        <div class="stat">ラウンド: <strong id="roundLabel">- / 5</strong></div>
+        <div class="stat">クリック回数: <strong id="clicksLabel">0</strong></div>
+        <div class="stat">未カバー絵文字: <strong id="remainLabel">-</strong></div>
+        <div class="stat">半径: <strong id="radiusLabel">60px</strong></div>
+      </div>
+      <div class="board-wrap" style="margin-top:8px;">
+        <div id="board" class="board"></div>
+        <div class="legend">盤面をクリック <em>またはドラッグ</em> すると「隠す円」が現れます。ドラッグで半径を調整可能（クリックのみの場合は既定半径）。円の<strong>内側に完全に入った絵文字</strong>は自動で強調表示されます。全て隠したらラウンドクリア（全5ラウンド、中央値でスコア）。</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="row" style="justify-content:space-between; align-items:flex-start;">
+        <div>
+          <div style="font-weight:700; margin-bottom:8px;">ラウンド結果</div>
+          <div class="rounds" id="rounds"></div>
+        </div>
+        <div>
+          <div class="stat">中央値スコア: <strong id="medianScore">-</strong></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ====== 可変パラメータ ======
+  const TOTAL_ROUNDS = 3;
+  const EMOJIS_PER_ROUND = 80;            // 1ラウンドの絵文字数
+  const COVER_RADIUS = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--cover-radius')) || 60;
+  const EMOJI_SIZE = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--emoji-size')) || 28; // px
+  const EMOJI_RADIUS = Math.ceil(EMOJI_SIZE / 2); // 完全カバー判定に使う半径近似
+  const EMOJI_POOL = [
+    '🍎','🍊','🍋','🍉','🍇','🍓','🍒','🍑','🥝','🍍','🥥','🥑',
+    '🌸','🌼','🌻','🌹','🌷','🍀','🌴','🌵','🍁','🍄','⭐','✨',
+    '🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐸','🐵',
+    '⚽','🏀','🏈','🎾','🎲','🧩','🎯','🎨','🎵','🎧'
+  ];
+
+  // 視認用アウトライン表示の定数
+  const OUTLINE_WIDTH = 2;                     // 円の枠線の太さ
+  const OUTLINE_COLOR = 'rgba(0,0,0,0.35)';    // 円の枠線の色（半透明）
+  const SHADOW_BLUR = 8;                       // ほんの少しの影で見やすく
+  const SHADOW_COLOR = 'rgba(0,0,0,0.15)';
+
+  // ドラッグでサイズ可変
+  const R_MIN = 30;          // 最小半径
+  const R_MAX = 220;         // 最大半径
+  const PREVIEW_DASH = [6,6];// プレビュー円の破線
+  const PREVIEW_COLOR = 'rgba(37,99,235,0.7)'; // 濃いめのアクセント
+
+  // ====== DOM 参照 ======
+  const board = document.getElementById('board');
+  const startBtn = document.getElementById('startBtn');
+  const nextBtn = document.getElementById('nextBtn');
+  const highlightBtn = document.getElementById('highlightBtn');
+  const roundLabel = document.getElementById('roundLabel');
+  const clicksLabel = document.getElementById('clicksLabel');
+  const remainLabel = document.getElementById('remainLabel');
+  const roundsDiv = document.getElementById('rounds');
+  const medianScoreEl = document.getElementById('medianScore');
+  const radiusLabel = document.getElementById('radiusLabel');
+  radiusLabel.textContent = COVER_RADIUS + 'px';
+
+  // ====== キャンバス（上に重ねて隠す円を描く） ======
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = 10; canvas.height = 10; // 初期
+  board.appendChild(canvas);
+
+  // 下層に絵文字レイヤー（HTML）、上層にカバーレイヤー（Canvas）
+
+  // ====== 状態 ======
+  let roundIndex = 0; // 0..TOTAL_ROUNDS-1
+  let clickCount = 0;
+  let coverCircles = []; // {x, y, r}
+  let emojis = []; // {x, y, el}
+  let results = []; // 各ラウンドのクリック回数
+  let playing = false;
+  let tempCircle = null;
+  let isDrawing = false;
+  let startPt = null;
+  let highlightUncovered = false; // 未カバー強調トグル
+
+  // デバイスピクセル比に合わせてキャンバスをスケール
+  function fitCanvasToBoard() {
+    const rect = board.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+    canvas.width = Math.floor(rect.width * dpr);
+    canvas.height = Math.floor(rect.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // 論理座標=CSS px
+    redrawCovers();
+  }
+
+  function redrawCovers() {
+    // 盤面背景色で円を塗りつぶして“隠す” + 可視化のために枠線を描画
+    const style = getComputedStyle(document.documentElement);
+    const bg = style.getPropertyValue('--bg').trim() || '#f7f7fb';
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    for (const c of coverCircles) {
+      // 塗り（隠す処理）
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+      ctx.fillStyle = bg;
+      ctx.fill();
+
+      // ほんのり影
+      ctx.save();
+      ctx.shadowBlur = SHADOW_BLUR;
+      ctx.shadowColor = SHADOW_COLOR;
+
+      // 枠線（視認用）
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+      ctx.lineWidth = OUTLINE_WIDTH;
+      ctx.strokeStyle = OUTLINE_COLOR;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // ドラッグ中のプレビュー
+    if (tempCircle) {
+      ctx.save();
+      ctx.setLineDash(PREVIEW_DASH);
+      ctx.beginPath();
+      ctx.arc(tempCircle.x, tempCircle.y, tempCircle.r, 0, Math.PI * 2);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = PREVIEW_COLOR;
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function randomEmoji() {
+    return EMOJI_POOL[Math.floor(Math.random() * EMOJI_POOL.length)];
+  }
+
+  function spawnEmojis() {
+    // 既存をクリア
+    for (const e of emojis) e.el.remove();
+    emojis = [];
+
+    const rect = board.getBoundingClientRect();
+    const pad = EMOJI_RADIUS + 6; // 端にめり込まないように余白
+    for (let i = 0; i < EMOJIS_PER_ROUND; i++) {
+      const x = Math.random() * (rect.width - pad * 2) + pad;
+      const y = Math.random() * (rect.height - pad * 2) + pad;
+      const el = document.createElement('span');
+      el.className = 'emoji';
+      el.textContent = randomEmoji();
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+      el.style.fontSize = EMOJI_SIZE + 'px';
+      board.appendChild(el);
+      emojis.push({ x, y, el });
+    }
+    updateRemain();
+  }
+
+  function updateRemain() {
+    const covered = emojis.filter(isEmojiFullyCovered).length;
+    remainLabel.textContent = (emojis.length - covered).toString();
+    updateCoverageStyles();
+  }
+
+  function isEmojiFullyCovered(emoji) {
+    // いずれかの円で完全カバー: 中心からの距離 + 絵文字半径 <= 円半径
+    for (const c of coverCircles) {
+      const dx = emoji.x - c.x;
+      const dy = emoji.y - c.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist + EMOJI_RADIUS <= c.r) return true;
+    }
+    return false;
+  }
+
+  function allCovered() {
+    return emojis.every(isEmojiFullyCovered);
+  }
+
+  function updateCoverageStyles() {
+    // カバー状態に応じて強調クラスを付け外し
+    for (const e of emojis) {
+      const now = isEmojiFullyCovered(e);
+      const had = e._covered || false;
+      e._covered = now;
+      if (now) {
+        if (!had) {
+          e.el.classList.add('covered', 'just');
+          // アニメ後にjustだけ外す
+          setTimeout(() => e.el.classList.remove('just'), 400);
+        } else {
+          e.el.classList.add('covered');
+        }
+      } else {
+        e.el.classList.remove('covered', 'just');
+      }
+       // 未カバー強調の付け外し
+       if (!now && highlightUncovered) {
+         e.el.classList.add('uncovered');
+       } else {
+         e.el.classList.remove('uncovered');
+       }
+    }
+  }
+
+   // 未カバー強調トグル
+   highlightBtn.addEventListener('click', () => {
+     highlightUncovered = !highlightUncovered;
+     // ボタン見た目のトグル（ON時は強調）
+     highlightBtn.classList.toggle('primary', highlightUncovered);
+     highlightBtn.textContent = highlightUncovered ? '未カバー強調: ON' : '未カバー強調';
+     updateCoverageStyles();
+   });
+
+  function setPlayingState(isPlaying) {
+    playing = isPlaying;
+    nextBtn.disabled = true;
+  }
+  function startRound(idx) {
+    roundIndex = idx;
+    clickCount = 0;
+    coverCircles = [];
+    fitCanvasToBoard();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    spawnEmojis();
+   for (const e of emojis) e._covered = false; // 状態初期化
+   updateRemain();          // 残り絵文字数更新
+   isDrawing = false;       // ラウンド開始時はドラッグ操作なし
+   startPt = null;
+   tempCircle = null;
+   redrawCovers();          // 盤面初期化描画
+   clicksLabel.textContent = '0';
+   roundLabel.textContent = `${idx + 1} / ${TOTAL_ROUNDS}`;
+   setPlayingState(true);
+   renderResults();
+  }
+
+
+  board.addEventListener('mousemove', (ev) => {
+    if (!isDrawing || !playing) return;
+    const rect = board.getBoundingClientRect();
+    const x = ev.clientX - rect.left;
+    const y = ev.clientY - rect.top;
+    const r = clamp(Math.hypot(x - startPt.x, y - startPt.y), R_MIN, R_MAX);
+    tempCircle = { x: startPt.x, y: startPt.y, r };
+    redrawCovers();
+    updateRemain();
+  });
+
+  board.addEventListener('mouseup', (ev) => {
+    if (!playing) return;
+    const rect = board.getBoundingClientRect();
+    const x = ev.clientX - rect.left;
+    const y = ev.clientY - rect.top;
+
+    let r = 0;
+    if (isDrawing && tempCircle) {
+      r = tempCircle.r;
+    }
+    // クリックのみ（ドラッグ距離ほぼ0）の場合は既定半径
+    if (!isDrawing || r < R_MIN * 0.5) {
+      coverCircles.push({ x, y, r: COVER_RADIUS });
+    } else {
+      coverCircles.push({ x: startPt.x, y: startPt.y, r });
+    }
+
+    isDrawing = false;
+    startPt = null;
+    tempCircle = null;
+
+    clickCount++;
+    clicksLabel.textContent = String(clickCount);
+    redrawCovers();
+    updateRemain();
+    if (allCovered()) {
+      endRound();
+    }
+  });
+
+  function endRound() {
+   // ラウンド終了：状態と結果を確定
+    setPlayingState(false);
+    results[roundIndex] = clickCount;
+    renderResults();
+    updateRemain();      // 最終的に未カバー0のはずだがUI同期のため
+    redrawCovers();      // 円を残したまま見た目を固定
+
+   // 次ラウンド遷移可否
+    if (roundIndex < TOTAL_ROUNDS - 1) {
+      nextBtn.disabled = false;
+    } else {
+      nextBtn.disabled = true;
+      roundLabel.textContent = `完了 / ${TOTAL_ROUNDS}`;
+    }
+  }
+
+
+  // 盤外でのマウスアップ対策
+document.addEventListener('mouseup', (ev) => {
+    if (isDrawing) {
+     isDrawing = false;
+     startPt = null;
+     tempCircle = null;
+     redrawCovers();
+     updateRemain();
+    }
+  });
+
+  // リサイズ時のキャンバス再フィット
+  const ro = new ResizeObserver(() => fitCanvasToBoard());
+  ro.observe(board);
+  window.addEventListener('orientationchange', fitCanvasToBoard);
+
+  // ボタン
+  startBtn.addEventListener('click', () => {
+    results = new Array(TOTAL_ROUNDS).fill(null);
+    renderResults();
+    startRound(0);
+  });
+
+  nextBtn.addEventListener('click', () => {
+    if (roundIndex < TOTAL_ROUNDS - 1) {
+      startRound(roundIndex + 1);
+    }
+  });
+
+  function renderResults() {
+    roundsDiv.innerHTML = '';
+    for (let i = 0; i < TOTAL_ROUNDS; i++) {
+      const chip = document.createElement('div');
+      chip.className = 'chip' + 
+        (i === roundIndex && playing
+          ? ' now'
+          : results[i] != null
+          ? ' done'
+          : '');
+      chip.innerHTML = `R${i + 1}: <span class="small">${
+        results[i] != null ? results[i] + ' 回' : (i < roundIndex ? '未記録' : '待機')
+      }</span>`;
+      roundsDiv.appendChild(chip);
+    }
+
+    const filled = results.filter((v) => typeof v === 'number');
+    const m = filled.length === TOTAL_ROUNDS ? median(filled) : null;
+    medianScoreEl.textContent = m != null ? m + ' 回' : '-';
+  }
+
+  function median(arr) {
+    if (!arr || arr.length === 0) return null;
+    const sorted = arr.slice().sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted[mid];
+  }
+
+  // 初期描画
+  fitCanvasToBoard();
+  renderResults();
+})();
+</script>
+</body>
+</html>
